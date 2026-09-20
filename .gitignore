@@ -1,0 +1,12 @@
+# Virtual environment (do NOT upload to Git)
+venv/
+
+# Python cache & bytecode
+__pycache__/
+*.pyc
+*.pyd
+.ipynb_checkpoints/
+
+# Temporary / OS files
+*.tmp
+.DS_Store

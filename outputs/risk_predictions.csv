@@ -1,0 +1,37 @@
+Date,BusinessUnit,Actual_NextPeriodRisk,Predicted_RiskProbPct,Predicted_RiskCategory,TopRiskDriver
+2023-12-01,Cloud Services,0,34.8,Low Risk,CashBufferRatio
+2023-12-01,Enterprise Solutions,0,50.5,Moderate Risk,DebtToCashRatio
+2023-12-01,Retail & E-commerce,0,42.9,Moderate Risk,CashBufferRatio
+2024-01-01,Cloud Services,0,39.4,Low Risk,OperatingMarginPct
+2024-01-01,Enterprise Solutions,0,46.2,Moderate Risk,ReceivablesToRevenueRatio
+2024-01-01,Retail & E-commerce,0,13.7,Low Risk,DebtToCashRatio
+2024-02-01,Cloud Services,0,26.8,Low Risk,ReceivablesToRevenueRatio
+2024-02-01,Enterprise Solutions,0,48.2,Moderate Risk,ReceivablesToRevenueRatio
+2024-02-01,Retail & E-commerce,0,85.4,High Risk,ReceivablesToRevenueRatio
+2024-03-01,Cloud Services,0,21.7,Low Risk,OperatingMarginPct
+2024-03-01,Enterprise Solutions,0,29.1,Low Risk,OperatingMarginPct
+2024-03-01,Retail & E-commerce,0,34.7,Low Risk,DebtToCashRatio
+2024-04-01,Cloud Services,0,45.1,Moderate Risk,DebtToCashRatio
+2024-04-01,Enterprise Solutions,0,20.7,Low Risk,DebtToCashRatio
+2024-04-01,Retail & E-commerce,0,54.9,Moderate Risk,CashBufferRatio
+2024-05-01,Cloud Services,0,40.8,Moderate Risk,OperatingMarginPct
+2024-05-01,Enterprise Solutions,0,26.4,Low Risk,DebtToCashRatio
+2024-05-01,Retail & E-commerce,1,56.9,Moderate Risk,DebtToCashRatio
+2024-06-01,Cloud Services,0,57.8,Moderate Risk,CashBufferRatio
+2024-06-01,Enterprise Solutions,0,57.3,Moderate Risk,CashBufferRatio
+2024-06-01,Retail & E-commerce,1,73.1,High Risk,RevenueGrowthMoM
+2024-07-01,Cloud Services,0,44.3,Moderate Risk,DebtToCashRatio
+2024-07-01,Enterprise Solutions,0,69.5,Moderate Risk,ReceivablesToRevenueRatio
+2024-07-01,Retail & E-commerce,0,47.4,Moderate Risk,DebtToCashRatio
+2024-08-01,Cloud Services,0,48.0,Moderate Risk,DebtToCashRatio
+2024-08-01,Enterprise Solutions,0,48.6,Moderate Risk,DebtToCashRatio
+2024-08-01,Retail & E-commerce,0,56.1,Moderate Risk,DebtToCashRatio
+2024-09-01,Cloud Services,0,59.1,Moderate Risk,GrossMarginPct
+2024-09-01,Enterprise Solutions,1,40.4,Moderate Risk,CashBufferRatio
+2024-09-01,Retail & E-commerce,1,44.1,Moderate Risk,DebtToCashRatio
+2024-10-01,Cloud Services,0,20.4,Low Risk,OperatingMarginPct
+2024-10-01,Enterprise Solutions,0,22.7,Low Risk,GrossMarginPct
+2024-10-01,Retail & E-commerce,0,30.2,Low Risk,GrossMarginPct
+2024-11-01,Cloud Services,0,46.7,Moderate Risk,DebtToCashRatio
+2024-11-01,Enterprise Solutions,0,29.3,Low Risk,OperatingMarginPct
+2024-11-01,Retail & E-commerce,0,20.8,Low Risk,ReceivablesToRevenueRatio
