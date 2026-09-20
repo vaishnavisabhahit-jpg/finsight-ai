@@ -1,32 +1,42 @@
-# FinSight AI — Financial Intelligence & Risk Decision Platform
+# FinSight AI 📈
+*Real-Time SEC Corporate FP&A Intelligence & ML Risk Triage*
 
-An end-to-end financial forecasting, distress risk ranking, and decision-support architecture built for corporate financial planning and analysis (FP&A). FinSight AI couples an embedded analytical SQL layer with time-series feature engineering, multi-target predictive modeling, and executive Power BI dashboards while enforcing strict chronological data boundaries.
-
----
-
-## System Objectives & Problem Formulation
-
-Standard machine learning deployments in corporate finance often degrade in production due to two systemic issues:
-1. Lookahead Data Leakage: Conventional randomized train/test splits inadvertently expose models to future data points during time-series feature engineering.
-2. Opaque Scoring Under Class Imbalance: Distressed quarters are statistically rare (<12% prevalence), causing naive classifiers to optimize for raw accuracy while failing to triage high-risk operating cycles.
-
-FinSight AI addresses these challenges by enforcing out-of-time evaluation boundaries, benchmarking predictive gains against standard persistence heuristics, and leveraging game-theoretic attribution to audit the dominant drivers of model risk scores.
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB?style=flat&logo=react&logoColor=black)](https://vitejs.dev/)
+[![Render](https://img.shields.io/badge/Deployed-Render-46E3B7?style=flat&logo=render&logoColor=white)](https://finsight-ai-no4q.onrender.com/docs)
+[![Vercel](https://img.shields.io/badge/Live%20Demo-Vercel-black?style=flat&logo=vercel&logoColor=white)](https://finsight-ai-two-tau.vercel.app)
 
 ---
 
-## Methodology & Empirical Evaluation
+## 🌐 Live Deployments
 
-- Temporal Out-of-Time Validation: Evaluated all models using strict chronological splits (reserving the final 12-month window as unseen holdout data) to eliminate lookahead bias.
-- Forecasting Baseline Benchmark: Benchmarked multi-target XGBoost models against a Naive Persistence baseline (y_t = y_{t-1}), achieving a 63% relative reduction in Operating Profit forecasting error (reducing MAPE from 20.04% to 7.41%).
-- Distress Risk Triage (<12% Imbalance): Formulated financial distress as a cost-sensitive risk-ranking problem rather than a standard balanced classifier. Optimized decision thresholds to isolate the top-decile riskiest quarters for auditor review.
-- Model Explainability (TreeSHAP): Applied game-theoretic Shapley attributions to audit the model dominant predictive drivers, identifying DebtToCashRatio and CashBufferRatio as the dominant features correlated with elevated risk scores.
-- Exploratory Outlier Screening: Deployed an Isolation Forest model as an unsupervised heuristic to flag multivariate balance-sheet irregularities for secondary human inspection.
+- **Web Dashboard (Vercel):** [https://finsight-ai-two-tau.vercel.app](https://finsight-ai-two-tau.vercel.app)
+- **API Swagger Docs (Render):** [https://finsight-ai-no4q.onrender.com/docs](https://finsight-ai-no4q.onrender.com/docs)
+- **API Health Check:** [https://finsight-ai-no4q.onrender.com/health](https://finsight-ai-no4q.onrender.com/health)
 
 ---
 
-## Repository Structure
+## 🏗️ Architecture Overview
 
-- sql/: Analytical aggregation SQL views
-- src/: Ingestion, chronological feature engineering, XGBoost models, and TreeSHAP scripts
-- outputs/: Master analytical feeds
-- powerbi/: Interactive 3-page reporting dashboard
+FinSight AI employs a decoupled client-server architecture engineered for sub-100ms analytical responses:
+
+```text
+                      +-----------------------------+
+                      |       React + Vite UI       |
+                      |     (Hosted on Vercel)      |
+                      +--------------+--------------+
+                                     |
+                                     | HTTPS / REST
+                                     v
+                      +-----------------------------+
+                      |       FastAPI Backend       |
+                      |     (Hosted on Render)      |
+                      +--------------+--------------+
+                                     |
+           +-------------------------+-------------------------+
+           |                         |                         |
+           v                         v                         v
++--------------------+    +--------------------+    +--------------------+
+|  In-Memory Feature |    |  XGBoost Operating |    |  TreeSHAP Driver   |
+|   Analytics Cache  |    |  Profit Forecaster |    |     Explainer      |
++--------------------+    +--------------------+    +--------------------+
