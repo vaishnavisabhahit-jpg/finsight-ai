@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional
 
 class HealthResponse(BaseModel):
@@ -23,10 +23,12 @@ class ForecastResponse(BaseModel):
 
 class RiskResponse(BaseModel):
     company: str
-    distress_risk_probability_pct: float
+    distress_propensity_score: float
     audit_triage_tier: str
     historical_distress_count: int
-    p75_baseline_threshold_pct: float
+    operating_threshold_score: float
+    validation_precision: float
+    validation_recall: float
     calibration_note: str
     score_interpretation: str
 
@@ -38,6 +40,8 @@ class ExplainResponse(BaseModel):
     company: str
     dominant_driver: str
     attributions: List[ShapFeatureAttribution]
+    base_value: float
+    model_raw_prediction: float
 
 class AnomalyRecord(BaseModel):
     company: str

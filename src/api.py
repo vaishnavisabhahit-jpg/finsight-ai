@@ -178,11 +178,11 @@ def get_forecast(company: str):
     next_quarter_pred = float(ml_engine['regressor'].predict(next_input_df)[0])
 
     return {
-        "company": comp_df.iloc[0]['Company'],
+        "company": str(comp_df.iloc[0]['Company']),
         "historical_dates": comp_df['Date'].tolist(),
         "actual_operating_profit": [float(x) for x in comp_df['OperatingProfit'].tolist()],
         "predicted_operating_profit": [round(float(x), 2) for x in preds],
-        "next_quarter_forecast_usd": round(next_quarter_pred, 2)
+        "next_quarter_forecast_usd": round(float(next_quarter_pred), 2)
     }
 
 @app.get("/risk/{company}", response_model=RiskResponse)
@@ -192,21 +192,21 @@ def get_risk(company: str):
     
     input_df = pd.DataFrame([latest[FEATURE_COLS]])
     raw_score = float(ml_engine['classifier'].predict_proba(input_df)[0][1])
-    threshold = ml_engine['threshold']
+    threshold = float(ml_engine['threshold'])
     
     tier = "Elevated Distress-Propensity Tier" if raw_score >= threshold else "Baseline Propensity Tier"
 
     return {
-        "company": comp_df.iloc[0]['Company'],
-        "distress_propensity_score": round(raw_score, 4),
-        "audit_triage_tier": tier,
+        "company": str(comp_df.iloc[0]['Company']),
+        "distress_propensity_score": round(float(raw_score), 4),
+        "audit_triage_tier": str(tier),
         "historical_distress_count": int(comp_df['IsDistressed'].sum()),
-        "operating_threshold_score": round(threshold, 4),
-        "validation_precision": round(ml_engine['val_precision'], 2),
-        "validation_recall": round(ml_engine['val_recall'], 2),
+        "operating_threshold_score": round(float(threshold), 4),
+        "validation_precision": round(float(ml_engine['val_precision']), 2),
+        "validation_recall": round(float(ml_engine['val_recall']), 2),
         "calibration_note": (
-            f"Threshold ({round(threshold, 4)}) calibrated on out-of-time validation fold to optimize F1 score. "
-            f"Validation performance: Precision={round(ml_engine['val_precision'], 2)}, Recall={round(ml_engine['val_recall'], 2)}."
+            f"Threshold ({round(float(threshold), 4)}) calibrated on out-of-time validation fold to optimize F1 score. "
+            f"Validation performance: Precision={round(float(ml_engine['val_precision']), 2)}, Recall={round(float(ml_engine['val_recall']), 2)}."
         ),
         "score_interpretation": "Class-weighted propensity score from cost-sensitive XGBoost, not an absolute default probability."
     }
@@ -234,7 +234,6 @@ def explain_risk(company: str):
     else:
         base_val = float(base_val)
 
-    # Use underlying Booster to get raw margin score without passing DMatrix to Scikit-Learn wrapper
     booster = ml_engine['classifier'].get_booster()
     dmat = xgb.DMatrix(input_df)
     margin_pred = float(booster.predict(dmat, output_margin=True)[0])
@@ -246,11 +245,11 @@ def explain_risk(company: str):
     dominant = FEATURE_COLS[int(np.argmax(np.abs(shap_vals)))]
 
     return {
-        "company": comp_df.iloc[0]['Company'],
-        "dominant_driver": dominant,
+        "company": str(comp_df.iloc[0]['Company']),
+        "dominant_driver": str(dominant),
         "attributions": attributions,
-        "base_value": round(base_val, 4),
-        "model_raw_prediction": round(margin_pred, 4)
+        "base_value": round(float(base_val), 4),
+        "model_raw_prediction": round(float(margin_pred), 4)
     }
 
 @app.get("/anomalies", response_model=AnomaliesResponse)
@@ -270,6 +269,6 @@ def get_anomalies():
         })
 
     return {
-        "total_anomalies_flagged": len(records),
+        "total_anomalies_flagged": int(len(records)),
         "anomalies": records
     }
