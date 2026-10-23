@@ -1,195 +1,199 @@
-import React, { useState, useEffect } from "react";
-import axios from "axios";
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend
-} from "recharts";
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  BarChart, Bar, CartesianGrid, Cell
+} from 'recharts';
+import { Activity, ShieldAlert, Cpu, BarChart3, AlertTriangle } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export default function App() {
   const [companies, setCompanies] = useState([]);
-  const [selectedCompany, setSelectedCompany] = useState("");
-  const [forecastData, setForecastData] = useState(null);
-  const [riskData, setRiskData] = useState(null);
-  const [explainData, setExplainData] = useState(null);
-  const [anomalies, setAnomalies] = useState([]);
+  const [selectedCompany, setSelectedCompany] = useState('');
+  const [forecast, setForecast] = useState(null);
+  const [risk, setRisk] = useState(null);
+  const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // 1. Initial Load: Companies and Global Anomalies
   useEffect(() => {
-    async function init() {
-      try {
-        const [compRes, anomRes] = await Promise.all([
-          axios.get(`${API_BASE}/companies`),
-          axios.get(`${API_BASE}/anomalies`)
-        ]);
-        setCompanies(compRes.data);
-        if (compRes.data.length > 0) {
-          setSelectedCompany(compRes.data[0].company);
-        }
-        setAnomalies(anomRes.data.anomalies || []);
-      } catch (err) {
-        setError("Failed to connect to FinSight backend. Ensure FastAPI is running on port 8000.");
-      } finally {
-        setLoading(false);
-      }
-    }
-    init();
+    fetchCompanies();
   }, []);
 
-  // 2. Fetch specific company metrics whenever selectedCompany changes
   useEffect(() => {
-    if (!selectedCompany) return;
-
-    async function fetchCompanyDetails() {
-      try {
-        const [fRes, rRes, eRes] = await Promise.all([
-          axios.get(`${API_BASE}/forecast/${selectedCompany}`),
-          axios.get(`${API_BASE}/risk/${selectedCompany}`),
-          axios.get(`${API_BASE}/explain/${selectedCompany}`)
-        ]);
-        setForecastData(fRes.data);
-        setRiskData(rRes.data);
-        setExplainData(eRes.data);
-      } catch (err) {
-        console.error("Error fetching company details", err);
-      }
+    if (selectedCompany) {
+      fetchAnalytics(selectedCompany);
     }
-    fetchCompanyDetails();
   }, [selectedCompany]);
 
-  if (loading) {
-    return <div style={{ padding: "40px", color: "#fff", background: "#0f172a", minHeight: "100vh" }}>Loading FinSight AI Platform...</div>;
-  }
+  const fetchCompanies = async () => {
+    try {
+      setLoading(true);
+      const res = await axios.get(`${API_BASE_URL}/companies`);
+      setCompanies(res.data);
+      if (res.data.length > 0) {
+        setSelectedCompany(res.data[0].company);
+      }
+      setLoading(false);
+    } catch (err) {
+      console.error(err);
+      setError('Unable to connect to the analytical inference engine.');
+      setLoading(false);
+    }
+  };
 
-  if (error) {
-    return (
-      <div style={{ padding: "40px", color: "#ef4444", background: "#0f172a", minHeight: "100vh" }}>
-        <h3>Connection Error</h3>
-        <p>{error}</p>
-      </div>
-    );
-  }
+  const fetchAnalytics = async (ticker) => {
+    try {
+      const [forecastRes, riskRes, explainRes] = await Promise.all([
+        axios.get(`${API_BASE_URL}/forecast/${ticker}`),
+        axios.get(`${API_BASE_URL}/risk/${ticker}`),
+        axios.get(`${API_BASE_URL}/explain/${ticker}`)
+      ]);
+      setForecast(forecastRes.data);
+      setRisk(riskRes.data);
+      setExplanation(explainRes.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
-  const selectedSummary = companies.find((c) => c.company === selectedCompany) || {};
-
-  // Format forecast series for Recharts
-  const chartData = (forecastData?.historical_dates || []).map((date, idx) => ({
-    date,
-    Actual: forecastData.actual_operating_profit[idx] !== null ? forecastData.actual_operating_profit[idx] / 1e9 : null,
-    Predicted: forecastData.predicted_operating_profit[idx] / 1e9
-  }));
+  const chartData = forecast
+    ? forecast.historical_dates.map((date, idx) => ({
+        date,
+        Actual: forecast.actual_operating_profit[idx],
+        Predicted: forecast.predicted_operating_profit[idx],
+      }))
+    : [];
 
   return (
-    <div style={{ background: "#0b0f19", color: "#f8fafc", minHeight: "100vh", padding: "24px", fontFamily: "sans-serif" }}>
-      {/* Header Bar */}
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #1e293b", paddingBottom: "16px" }}>
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans">
+      <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-slate-800 gap-4">
         <div>
-          <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "700", color: "#38bdf8" }}>FinSight AI</h1>
-          <p style={{ margin: "4px 0 0", color: "#94a3b8", fontSize: "14px" }}>
-            Real-Time SEC Corporate FP&A Intelligence & Risk Triage
+          <div className="flex items-center gap-2">
+            <Cpu className="text-cyan-400 w-7 h-7" />
+            <h1 className="text-2xl font-bold tracking-tight text-white">FinSight AI</h1>
+            <span className="text-xs bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded">v2.1 Empirical</span>
+          </div>
+          <p className="text-sm text-slate-400 mt-1">
+            Corporate FP&A Intelligence & Statistical Feature Attribution (Synthetic Benchmarks)
           </p>
         </div>
-        <div>
-          <label style={{ fontSize: "14px", color: "#94a3b8", marginRight: "8px" }}>Select Entity:</label>
+
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-slate-400 font-medium">Active Cohort:</label>
           <select
             value={selectedCompany}
             onChange={(e) => setSelectedCompany(e.target.value)}
-            style={{ background: "#1e293b", color: "#fff", border: "1px solid #334155", padding: "8px 16px", borderRadius: "6px" }}
+            className="bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-2 outline-none focus:border-cyan-500"
           >
             {companies.map((c) => (
-              <option key={c.company} value={c.company}>{c.company}</option>
+              <option key={c.company} value={c.company}>
+                {c.company}
+              </option>
             ))}
           </select>
         </div>
       </header>
 
-      {/* KPI Cards */}
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px", marginTop: "24px" }}>
-        <div style={{ background: "#1e293b", padding: "16px", borderRadius: "8px" }}>
-          <span style={{ color: "#94a3b8", fontSize: "12px" }}>LATEST QUARTER REVENUE</span>
-          <h2 style={{ margin: "8px 0 0" }}>${((selectedSummary.latest_revenue_usd || 0) / 1e9).toFixed(2)}B</h2>
+      {error ? (
+        <div className="max-w-7xl mx-auto mt-8 p-4 bg-red-950/40 border border-red-800 text-red-200 rounded-lg flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-400" />
+          <span>{error}</span>
         </div>
-        <div style={{ background: "#1e293b", padding: "16px", borderRadius: "8px" }}>
-          <span style={{ color: "#94a3b8", fontSize: "12px" }}>OPERATING MARGIN</span>
-          <h2 style={{ margin: "8px 0 0" }}>{selectedSummary.latest_operating_margin_pct || 0}%</h2>
-        </div>
-        <div style={{ background: "#1e293b", padding: "16px", borderRadius: "8px" }}>
-          <span style={{ color: "#94a3b8", fontSize: "12px" }}>DISTRESS RISK SCORE</span>
-          <h2 style={{ margin: "8px 0 0", color: (riskData?.distress_risk_probability_pct || 0) > 50 ? "#ef4444" : "#10b981" }}>
-            {riskData?.distress_risk_probability_pct?.toFixed(1) || 0}%
-          </h2>
-        </div>
-        <div style={{ background: "#1e293b", padding: "16px", borderRadius: "8px" }}>
-          <span style={{ color: "#94a3b8", fontSize: "12px" }}>TRIAGE STATUS</span>
-          <h3 style={{ margin: "8px 0 0", color: riskData?.audit_triage_tier === "High Priority Review" ? "#ef4444" : "#38bdf8" }}>
-            {riskData?.audit_triage_tier || "Evaluating..."}
-          </h3>
-        </div>
-      </section>
+      ) : (
+        <main className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+          {/* Risk Triage Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Distress Anomaly Triage</span>
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+            </div>
+            {risk ? (
+              <div className="mt-4 space-y-4">
+                <div>
+                  <div className="text-3xl font-extrabold text-white">
+                    {risk.distress_risk_probability_pct}%
+                  </div>
+                  <span className={`inline-block mt-2 text-xs px-2.5 py-1 rounded-full font-medium ${
+                    risk.audit_triage_tier === 'Elevated Anomaly Tier'
+                      ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                      : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  }`}>
+                    {risk.audit_triage_tier}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-400 leading-relaxed border-t border-slate-800/80 pt-3">
+                  <p><strong className="text-slate-300">Baseline Cutoff:</strong> P75 ({risk.p75_baseline_threshold_pct}%)</p>
+                  <p className="mt-1 text-[11px] text-slate-400">{risk.calibration_note}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500 mt-4">Loading risk metrics...</div>
+            )}
+          </div>
 
-      {/* Charts Grid */}
-      <section style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "24px", marginTop: "24px" }}>
-        {/* Forecast Realization Chart */}
-        <div style={{ background: "#1e293b", padding: "20px", borderRadius: "8px" }}>
-          <h3 style={{ marginTop: 0, fontSize: "16px" }}>Operating Profit: Realized vs. XGBoost Prediction ($ Billions)</h3>
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="date" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" />
-              <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155" }} />
-              <Legend />
-              <Line type="monotone" dataKey="Actual" stroke="#38bdf8" strokeWidth={2} />
-              <Line type="monotone" dataKey="Predicted" stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 5" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+          {/* Forecasting Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:col-span-2 shadow-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Operating Profit Forecast (XGBoost)</span>
+              <Activity className="w-4 h-4 text-cyan-400" />
+            </div>
+            <div className="h-64 mt-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis dataKey="date" stroke="#64748b" fontSize={11} />
+                  <YAxis stroke="#64748b" fontSize={11} tickFormatter={(val) => `$${(val / 1e6).toFixed(0)}M`} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', fontSize: '12px' }}
+                    formatter={(val) => [`$${Number(val).toLocaleString()}`, '']}
+                  />
+                  <Line type="monotone" dataKey="Actual" stroke="#38bdf8" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="Predicted" stroke="#a855f7" strokeWidth={2} strokeDasharray="4 4" dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
 
-        {/* TreeSHAP Feature Attributions */}
-        <div style={{ background: "#1e293b", padding: "20px", borderRadius: "8px" }}>
-          <h3 style={{ marginTop: 0, fontSize: "16px" }}>TreeSHAP Feature Attributions</h3>
-          <p style={{ color: "#94a3b8", fontSize: "12px" }}>Top Driver: <strong style={{ color: "#f8fafc" }}>{explainData?.dominant_driver}</strong></p>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart layout="vertical" data={explainData?.attributions || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis type="number" stroke="#94a3b8" />
-              <YAxis dataKey="feature" type="category" stroke="#94a3b8" width={110} tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155" }} />
-              <Bar dataKey="attribution_weight" fill="#38bdf8" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </section>
-
-      {/* Flagged Balance Sheet Anomalies */}
-      <section style={{ background: "#1e293b", padding: "20px", borderRadius: "8px", marginTop: "24px" }}>
-        <h3 style={{ marginTop: 0, fontSize: "16px" }}>Isolation Forest: Flagged Multivariate Irregularities</h3>
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "12px", fontSize: "14px" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #334155", textAlign: "left", color: "#94a3b8" }}>
-              <th style={{ padding: "8px" }}>Company</th>
-              <th style={{ padding: "8px" }}>Quarter</th>
-              <th style={{ padding: "8px" }}>Revenue ($B)</th>
-              <th style={{ padding: "8px" }}>Operating Profit ($B)</th>
-              <th style={{ padding: "8px" }}>Screening Diagnostic</th>
-            </tr>
-          </thead>
-          <tbody>
-            {anomalies.map((a, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
-                <td style={{ padding: "8px" }}>{a.company}</td>
-                <td style={{ padding: "8px" }}>{a.date}</td>
-                <td style={{ padding: "8px" }}>${(a.revenue_usd / 1e9).toFixed(2)}B</td>
-                <td style={{ padding: "8px" }}>${(a.operating_profit_usd / 1e9).toFixed(2)}B</td>
-                <td style={{ padding: "8px", color: "#f59e0b" }}>{a.reason}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+          {/* SHAP Attribution Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:col-span-3 shadow-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">TreeSHAP Feature Attributions</span>
+                <span className="block text-[11px] text-slate-400 mt-0.5">
+                  Additive statistical associations relative to expected value (not causal proof)
+                </span>
+              </div>
+              <BarChart3 className="w-4 h-4 text-purple-400" />
+            </div>
+            {explanation ? (
+              <div className="mt-4">
+                <div className="text-xs text-slate-300 mb-3">
+                  Dominant Predictive Contributor: <strong className="text-purple-300">{explanation.dominant_driver}</strong>
+                </div>
+                <div className="h-44">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={explanation.attributions} layout="vertical" margin={{ left: 40, right: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
+                      <XAxis type="number" stroke="#64748b" fontSize={11} />
+                      <YAxis dataKey="feature" type="category" stroke="#94a3b8" fontSize={11} width={130} />
+                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', fontSize: '12px' }} />
+                      <Bar dataKey="attribution_weight">
+                        {explanation.attributions.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.attribution_weight >= 0 ? '#06b6d4' : '#f43f5e'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500 mt-4">Loading attributions...</div>
+            )}
+          </div>
+        </main>
+      )}
     </div>
   );
 }

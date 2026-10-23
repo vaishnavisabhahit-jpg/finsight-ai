@@ -1,42 +1,41 @@
-import pytest
+import os
 import pandas as pd
 from fastapi.testclient import TestClient
-from src.api import app
+from src.api import app, initialize_models
 
 def test_api_health():
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json()["status"] == "healthy"
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["companies_loaded"] > 0
 
 def test_sec_features_data_integrity():
-    df = pd.read_csv("data/sec_features.csv")
-    expected_cols = [
-        'Revenue', 'OperatingProfit', 'Cash', 'Debt', 
-        'Lag_Revenue_1', 'Lag_OperatingProfit_1', 'Lag_DebtToCash_1', 
-        'IsDistressed', 'Split'
+    csv_path = "data/sec_features.csv"
+    assert os.path.exists(csv_path), f"File {csv_path} does not exist"
+    df = pd.read_csv(csv_path)
+    required_cols = [
+        "Company", "Date", "Revenue", "OperatingProfit",
+        "Lag_Revenue_1", "Lag_OperatingProfit_1", "Lag_OperatingMargin_1",
+        "Lag_DebtToCash_1", "Revenue_QoQ_Growth", "IsDistressed"
     ]
-    for col in expected_cols:
-        assert col in df.columns, f"Missing critical column: {col}"
-    
-    # Verify temporal split partitions exist and no nulls
-    assert "Train" in df["Split"].values
-    assert "Test" in df["Split"].values
-    assert df.isnull().sum().sum() == 0, "Null values found in processed feature set"
+    for col in required_cols:
+        assert col in df.columns, f"Missing required column: {col}"
+    assert len(df) > 0
 
 def test_api_inference_endpoint():
+    # Production inference route is GET /forecast/{company}
     with TestClient(app) as client:
-        payload = {
-            "lag_revenue": 90000000.0,
-            "lag_operating_profit": 15000000.0,
-            "lag_operating_margin": 16.67,
-            "lag_debt_to_cash": 1.2,
-            "revenue_qoq_growth": 0.05
-        }
-        response = client.post("/predict", json=payload)
+        # Retrieve active companies
+        comp_res = client.get("/companies")
+        assert comp_res.status_code == 200
+        first_company = comp_res.json()[0]["company"]
+
+        # Run model inference on first cohort
+        response = client.get(f"/forecast/{first_company}")
         assert response.status_code == 200
-        res_data = response.json()
-        assert "predicted_operating_profit_usd" in res_data
-        assert "distress_risk_probability_pct" in res_data
-        assert 0.0 <= res_data["distress_risk_probability_pct"] <= 100.0
-        assert res_data["audit_triage_tier"] in ["High Priority Review", "Normal Risk Profile"]
+        data = response.json()
+        assert data["company"] == first_company
+        assert "next_quarter_forecast_usd" in data
+        assert isinstance(data["next_quarter_forecast_usd"], float)

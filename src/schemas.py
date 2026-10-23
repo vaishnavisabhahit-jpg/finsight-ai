@@ -26,6 +26,9 @@ class RiskResponse(BaseModel):
     distress_risk_probability_pct: float
     audit_triage_tier: str
     historical_distress_count: int
+    p75_baseline_threshold_pct: float
+    calibration_note: str
+    score_interpretation: str
 
 class ShapFeatureAttribution(BaseModel):
     feature: str

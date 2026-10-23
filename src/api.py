@@ -47,9 +47,19 @@ def initialize_models():
 
     # 2. XGBoost Cost-Sensitive Distress Classifier
     pos_weight = (len(df) - df['IsDistressed'].sum()) / max(1, df['IsDistressed'].sum())
-    clf = xgb.XGBClassifier(n_estimators=60, max_depth=3, scale_pos_weight=pos_weight, random_state=42, eval_metric='logloss')
+    clf = xgb.XGBClassifier(
+        n_estimators=60,
+        max_depth=3,
+        scale_pos_weight=pos_weight,
+        random_state=42,
+        eval_metric='logloss'
+    )
     clf.fit(df[FEATURE_COLS], df['IsDistressed'])
     ml_engine['classifier'] = clf
+
+    # Compute empirical 75th percentile on training baseline distribution
+    train_probs = clf.predict_proba(df[FEATURE_COLS])[:, 1] * 100.0
+    ml_engine['distress_p75_threshold'] = float(np.percentile(train_probs, 75))
 
     # 3. TreeSHAP Attribution Engine
     ml_engine['explainer'] = shap.TreeExplainer(clf)
@@ -58,7 +68,7 @@ def initialize_models():
     iso = IsolationForest(contamination=0.06, random_state=42)
     iso.fit(df[FEATURE_COLS])
     ml_engine['iso_forest'] = iso
-    logger.info("ML Engine successfully loaded into memory.")
+    logger.info("ML Engine successfully loaded into memory with calibrated P75 threshold: %.2f%%", ml_engine['distress_p75_threshold'])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -69,8 +79,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="FinSight AI Backend",
-    description="FP&A Decision Support Engine with out-of-time XGBoost forecasts, TreeSHAP, and risk triage.",
-    version="2.0.0",
+    description="FP&A Decision Support Engine with out-of-time XGBoost forecasts, TreeSHAP statistical attributions, and calibrated percentile risk triage.",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -91,7 +101,7 @@ def get_company_df(company: str) -> pd.DataFrame:
     return comp_df
 
 # ==========================================
-# 6 PRODUCTION ENDPOINTS
+# PRODUCTION ENDPOINTS
 # ==========================================
 
 @app.get("/health", response_model=HealthResponse)
@@ -154,13 +164,22 @@ def get_risk(company: str):
         latest['Revenue_QoQ_Growth']
     ]])
     prob = float(ml_engine['classifier'].predict_proba(input_vector)[0][1]) * 100.0
-    tier = "High Priority Review" if prob >= 50.0 else "Normal Risk Profile"
+    p75_threshold = ml_engine['distress_p75_threshold']
+    
+    # Percentile-calibrated tiering based on empirical P75 of training scores
+    tier = "Elevated Anomaly Tier" if prob >= p75_threshold else "Baseline Distribution Tier"
 
     return {
         "company": comp_df.iloc[0]['Company'],
         "distress_risk_probability_pct": round(prob, 2),
         "audit_triage_tier": tier,
-        "historical_distress_count": int(comp_df['IsDistressed'].sum())
+        "historical_distress_count": int(comp_df['IsDistressed'].sum()),
+        "p75_baseline_threshold_pct": round(p75_threshold, 2),
+        "calibration_note": (
+            f"Classification evaluated against empirical P75 baseline ({round(p75_threshold, 1)}%) "
+            "of synthetic training distribution under cost-sensitive weighting, not an absolute default probability."
+        ),
+        "score_interpretation": "Relative distress propensity score under asymmetric misclassification penalty."
     }
 
 @app.get("/explain/{company}", response_model=ExplainResponse)
