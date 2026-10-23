@@ -30,12 +30,10 @@ FEATURE_COLS = [
 ]
 
 def resolve_data_path() -> Path:
-    # Check configured path first
     target = Path(settings.DATA_PATH)
     if target.exists():
         return target
     
-    # Fallback to local root searches
     fallbacks = [
         Path("data/synthetic_fpa_features.csv"),
         Path("data/sec_features.csv"),
@@ -46,7 +44,7 @@ def resolve_data_path() -> Path:
         if p.exists():
             return p
 
-    raise RuntimeError(f"Missing data source. Tried {settings.DATA_PATH} and standard fallback paths.")
+    raise RuntimeError(f"Missing data source. Tried {settings.DATA_PATH} and fallback paths.")
 
 def initialize_models():
     data_path = resolve_data_path()
@@ -108,8 +106,8 @@ def initialize_models():
     iso = IsolationForest(contamination=0.06, random_state=42)
     iso.fit(df[FEATURE_COLS])
     ml_engine['iso_forest'] = iso
-    logger.info("Engine initialized. Data: %s | Threshold: %.4f | Val Precision: %.2f | Val Recall: %.2f",
-                data_path, best_threshold, val_prec, val_rec)
+    logger.info("Engine initialized. Threshold: %.4f | Precision: %.2f | Recall: %.2f",
+                best_threshold, val_prec, val_rec)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -170,14 +168,14 @@ def get_forecast(company: str):
     preds = ml_engine['regressor'].predict(comp_df[FEATURE_COLS])
     
     latest = comp_df.iloc[-1]
-    next_input = np.array([[
-        latest['Revenue'],
-        latest['OperatingProfit'],
-        latest['OperatingMarginPct'],
-        latest['DebtToCashRatio'],
-        latest['Revenue_QoQ_Growth']
-    ]])
-    next_quarter_pred = float(ml_engine['regressor'].predict(next_input)[0])
+    next_input_df = pd.DataFrame([{
+        'Lag_Revenue_1': latest['Revenue'],
+        'Lag_OperatingProfit_1': latest['OperatingProfit'],
+        'Lag_OperatingMargin_1': latest['OperatingMarginPct'],
+        'Lag_DebtToCash_1': latest['DebtToCashRatio'],
+        'Revenue_QoQ_Growth': latest['Revenue_QoQ_Growth']
+    }])[FEATURE_COLS]
+    next_quarter_pred = float(ml_engine['regressor'].predict(next_input_df)[0])
 
     return {
         "company": comp_df.iloc[0]['Company'],
@@ -191,14 +189,9 @@ def get_forecast(company: str):
 def get_risk(company: str):
     comp_df = get_company_df(company)
     latest = comp_df.iloc[-1]
-    input_vector = np.array([[
-        latest['Lag_Revenue_1'],
-        latest['Lag_OperatingProfit_1'],
-        latest['Lag_OperatingMargin_1'],
-        latest['Lag_DebtToCash_1'],
-        latest['Revenue_QoQ_Growth']
-    ]])
-    raw_score = float(ml_engine['classifier'].predict_proba(input_vector)[0][1])
+    
+    input_df = pd.DataFrame([latest[FEATURE_COLS]])
+    raw_score = float(ml_engine['classifier'].predict_proba(input_df)[0][1])
     threshold = ml_engine['threshold']
     
     tier = "Elevated Distress-Propensity Tier" if raw_score >= threshold else "Baseline Propensity Tier"
@@ -222,18 +215,29 @@ def get_risk(company: str):
 def explain_risk(company: str):
     comp_df = get_company_df(company)
     latest = comp_df.iloc[-1]
-    input_vector = np.array([[
-        latest['Lag_Revenue_1'],
-        latest['Lag_OperatingProfit_1'],
-        latest['Lag_OperatingMargin_1'],
-        latest['Lag_DebtToCash_1'],
-        latest['Revenue_QoQ_Growth']
-    ]])
+    
+    input_df = pd.DataFrame([latest[FEATURE_COLS]])
     
     explainer = ml_engine['explainer']
-    shap_vals = explainer.shap_values(input_vector)[0]
-    base_val = float(explainer.expected_value if not isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value[0])
-    margin_pred = float(ml_engine['classifier'].predict(xgb.DMatrix(input_vector), output_margin=True)[0])
+    raw_shap = explainer.shap_values(input_df)
+    
+    if isinstance(raw_shap, list):
+        shap_vals = raw_shap[1][0]
+    elif len(raw_shap.shape) == 2:
+        shap_vals = raw_shap[0]
+    else:
+        shap_vals = raw_shap[0][0]
+
+    base_val = explainer.expected_value
+    if isinstance(base_val, (list, np.ndarray)):
+        base_val = float(base_val[-1])
+    else:
+        base_val = float(base_val)
+
+    # Use underlying Booster to get raw margin score without passing DMatrix to Scikit-Learn wrapper
+    booster = ml_engine['classifier'].get_booster()
+    dmat = xgb.DMatrix(input_df)
+    margin_pred = float(booster.predict(dmat, output_margin=True)[0])
     
     attributions = [
         ShapFeatureAttribution(feature=FEATURE_COLS[i], attribution_weight=round(float(shap_vals[i]), 4))
