@@ -10,6 +10,7 @@ import xgboost as xgb
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import precision_recall_curve
 
 from src.config import settings
 from src.schemas import (
@@ -18,11 +19,9 @@ from src.schemas import (
     AnomaliesResponse, AnomalyRecord
 )
 
-# Logging Setup
 logging.basicConfig(level=settings.LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("finsight-backend")
 
-# In-Memory Cache (loaded strictly once at startup)
 ml_engine: Dict[str, Any] = {}
 
 FEATURE_COLS = [
@@ -30,13 +29,30 @@ FEATURE_COLS = [
     'Lag_DebtToCash_1', 'Revenue_QoQ_Growth'
 ]
 
-def initialize_models():
-    logger.info("Initializing ML models and analytical cache from %s...", settings.DATA_PATH)
-    path = Path(settings.DATA_PATH)
-    if not path.exists():
-        raise RuntimeError(f"Missing data source: {settings.DATA_PATH}")
+def resolve_data_path() -> Path:
+    # Check configured path first
+    target = Path(settings.DATA_PATH)
+    if target.exists():
+        return target
+    
+    # Fallback to local root searches
+    fallbacks = [
+        Path("data/synthetic_fpa_features.csv"),
+        Path("data/sec_features.csv"),
+        Path(__file__).resolve().parent.parent / "data" / "synthetic_fpa_features.csv",
+        Path(__file__).resolve().parent.parent / "data" / "sec_features.csv"
+    ]
+    for p in fallbacks:
+        if p.exists():
+            return p
 
-    df = pd.read_csv(path)
+    raise RuntimeError(f"Missing data source. Tried {settings.DATA_PATH} and standard fallback paths.")
+
+def initialize_models():
+    data_path = resolve_data_path()
+    logger.info("Initializing ML models from %s...", data_path)
+
+    df = pd.read_csv(data_path)
     df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
     ml_engine['data'] = df
 
@@ -45,8 +61,16 @@ def initialize_models():
     reg.fit(df[FEATURE_COLS], df['OperatingProfit'])
     ml_engine['regressor'] = reg
 
-    # 2. XGBoost Cost-Sensitive Distress Classifier
-    pos_weight = (len(df) - df['IsDistressed'].sum()) / max(1, df['IsDistressed'].sum())
+    # 2. Strict Out-of-Time Temporal Split for Distress Model & Calibration
+    sorted_dates = sorted(df['Date'].unique())
+    split_idx = int(len(sorted_dates) * 0.75)
+    split_date = sorted_dates[split_idx]
+    
+    train_df = df[df['Date'] < split_date].copy()
+    val_df = df[df['Date'] >= split_date].copy()
+    ml_engine['split_date'] = split_date
+
+    pos_weight = (len(train_df) - train_df['IsDistressed'].sum()) / max(1, train_df['IsDistressed'].sum())
     clf = xgb.XGBClassifier(
         n_estimators=60,
         max_depth=3,
@@ -54,21 +78,38 @@ def initialize_models():
         random_state=42,
         eval_metric='logloss'
     )
-    clf.fit(df[FEATURE_COLS], df['IsDistressed'])
+    clf.fit(train_df[FEATURE_COLS], train_df['IsDistressed'])
     ml_engine['classifier'] = clf
 
-    # Compute empirical 75th percentile on training baseline distribution
-    train_probs = clf.predict_proba(df[FEATURE_COLS])[:, 1] * 100.0
-    ml_engine['distress_p75_threshold'] = float(np.percentile(train_probs, 75))
+    # Precision-Recall Optimization on Validation Fold
+    val_scores = clf.predict_proba(val_df[FEATURE_COLS])[:, 1]
+    y_val = val_df['IsDistressed'].values
+    
+    precisions, recalls, thresholds = precision_recall_curve(y_val, val_scores)
+    f1_scores = np.divide(
+        2 * (precisions[:-1] * recalls[:-1]),
+        (precisions[:-1] + recalls[:-1]),
+        out=np.zeros_like(thresholds),
+        where=(precisions[:-1] + recalls[:-1]) > 0
+    )
+    best_idx = int(np.argmax(f1_scores)) if len(f1_scores) > 0 else 0
+    best_threshold = float(thresholds[best_idx]) if len(thresholds) > 0 else 0.5
+    val_prec = float(precisions[best_idx]) if len(precisions) > 0 else 0.0
+    val_rec = float(recalls[best_idx]) if len(recalls) > 0 else 0.0
+
+    ml_engine['threshold'] = best_threshold
+    ml_engine['val_precision'] = val_prec
+    ml_engine['val_recall'] = val_rec
 
     # 3. TreeSHAP Attribution Engine
     ml_engine['explainer'] = shap.TreeExplainer(clf)
 
-    # 4. Exploratory Outlier Isolation Forest
+    # 4. Outlier Isolation Forest
     iso = IsolationForest(contamination=0.06, random_state=42)
     iso.fit(df[FEATURE_COLS])
     ml_engine['iso_forest'] = iso
-    logger.info("ML Engine successfully loaded into memory with calibrated P75 threshold: %.2f%%", ml_engine['distress_p75_threshold'])
+    logger.info("Engine initialized. Data: %s | Threshold: %.4f | Val Precision: %.2f | Val Recall: %.2f",
+                data_path, best_threshold, val_prec, val_rec)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,12 +120,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="FinSight AI Backend",
-    description="FP&A Decision Support Engine with out-of-time XGBoost forecasts, TreeSHAP statistical attributions, and calibrated percentile risk triage.",
-    version="2.1.0",
+    description="FP&A Decision Support Engine with out-of-time XGBoost forecasts, TreeSHAP attributions, and PR-calibrated triage.",
+    version="2.2.0",
     lifespan=lifespan
 )
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -99,10 +139,6 @@ def get_company_df(company: str) -> pd.DataFrame:
     if comp_df.empty:
         raise HTTPException(status_code=404, detail=f"Company '{company}' not found.")
     return comp_df
-
-# ==========================================
-# PRODUCTION ENDPOINTS
-# ==========================================
 
 @app.get("/health", response_model=HealthResponse)
 def health():
@@ -133,7 +169,6 @@ def get_forecast(company: str):
     comp_df = get_company_df(company)
     preds = ml_engine['regressor'].predict(comp_df[FEATURE_COLS])
     
-    # Predict next quarter using latest observed quarter as lag-1
     latest = comp_df.iloc[-1]
     next_input = np.array([[
         latest['Revenue'],
@@ -163,23 +198,24 @@ def get_risk(company: str):
         latest['Lag_DebtToCash_1'],
         latest['Revenue_QoQ_Growth']
     ]])
-    prob = float(ml_engine['classifier'].predict_proba(input_vector)[0][1]) * 100.0
-    p75_threshold = ml_engine['distress_p75_threshold']
+    raw_score = float(ml_engine['classifier'].predict_proba(input_vector)[0][1])
+    threshold = ml_engine['threshold']
     
-    # Percentile-calibrated tiering based on empirical P75 of training scores
-    tier = "Elevated Anomaly Tier" if prob >= p75_threshold else "Baseline Distribution Tier"
+    tier = "Elevated Distress-Propensity Tier" if raw_score >= threshold else "Baseline Propensity Tier"
 
     return {
         "company": comp_df.iloc[0]['Company'],
-        "distress_risk_probability_pct": round(prob, 2),
+        "distress_propensity_score": round(raw_score, 4),
         "audit_triage_tier": tier,
         "historical_distress_count": int(comp_df['IsDistressed'].sum()),
-        "p75_baseline_threshold_pct": round(p75_threshold, 2),
+        "operating_threshold_score": round(threshold, 4),
+        "validation_precision": round(ml_engine['val_precision'], 2),
+        "validation_recall": round(ml_engine['val_recall'], 2),
         "calibration_note": (
-            f"Classification evaluated against empirical P75 baseline ({round(p75_threshold, 1)}%) "
-            "of synthetic training distribution under cost-sensitive weighting, not an absolute default probability."
+            f"Threshold ({round(threshold, 4)}) calibrated on out-of-time validation fold to optimize F1 score. "
+            f"Validation performance: Precision={round(ml_engine['val_precision'], 2)}, Recall={round(ml_engine['val_recall'], 2)}."
         ),
-        "score_interpretation": "Relative distress propensity score under asymmetric misclassification penalty."
+        "score_interpretation": "Class-weighted propensity score from cost-sensitive XGBoost, not an absolute default probability."
     }
 
 @app.get("/explain/{company}", response_model=ExplainResponse)
@@ -193,7 +229,11 @@ def explain_risk(company: str):
         latest['Lag_DebtToCash_1'],
         latest['Revenue_QoQ_Growth']
     ]])
-    shap_vals = ml_engine['explainer'].shap_values(input_vector)[0]
+    
+    explainer = ml_engine['explainer']
+    shap_vals = explainer.shap_values(input_vector)[0]
+    base_val = float(explainer.expected_value if not isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value[0])
+    margin_pred = float(ml_engine['classifier'].predict(xgb.DMatrix(input_vector), output_margin=True)[0])
     
     attributions = [
         ShapFeatureAttribution(feature=FEATURE_COLS[i], attribution_weight=round(float(shap_vals[i]), 4))
@@ -204,7 +244,9 @@ def explain_risk(company: str):
     return {
         "company": comp_df.iloc[0]['Company'],
         "dominant_driver": dominant,
-        "attributions": attributions
+        "attributions": attributions,
+        "base_value": round(base_val, 4),
+        "model_raw_prediction": round(margin_pred, 4)
     }
 
 @app.get("/anomalies", response_model=AnomaliesResponse)

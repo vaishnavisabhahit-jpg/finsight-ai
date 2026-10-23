@@ -1,9 +1,12 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
 from typing import List
+from pydantic_settings import BaseSettings
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
-    DATA_PATH: str = "data/sec_features.csv"
-    ANALYTICS_PATH: str = "outputs/sec_master_analytics.csv"
+    DATA_PATH: str = str(BASE_DIR / "data" / "synthetic_fpa_features.csv")
+    ANALYTICS_PATH: str = str(BASE_DIR / "outputs" / "synthetic_fpa_master_analytics.csv")
     ALLOWED_ORIGINS: str = "http://localhost:5173,https://finsight-ai.vercel.app"
     LOG_LEVEL: str = "INFO"
 
