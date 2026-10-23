@@ -73,7 +73,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <Cpu className="text-cyan-400 w-7 h-7" />
             <h1 className="text-2xl font-bold tracking-tight text-white">FinSight AI</h1>
-            <span className="text-xs bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded">v2.1 Empirical</span>
+            <span className="text-xs bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded">v2.2 Calibrated</span>
           </div>
           <p className="text-sm text-slate-400 mt-1">
             Corporate FP&A Intelligence & Statistical Feature Attribution (Synthetic Benchmarks)
@@ -106,17 +106,17 @@ export default function App() {
           {/* Risk Triage Card */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Distress Anomaly Triage</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Distress Propensity Triage</span>
               <ShieldAlert className="w-4 h-4 text-amber-400" />
             </div>
             {risk ? (
               <div className="mt-4 space-y-4">
                 <div>
                   <div className="text-3xl font-extrabold text-white">
-                    {risk.distress_risk_probability_pct}%
+                    {risk.distress_propensity_score}
                   </div>
                   <span className={`inline-block mt-2 text-xs px-2.5 py-1 rounded-full font-medium ${
-                    risk.audit_triage_tier === 'Elevated Anomaly Tier'
+                    risk.audit_triage_tier === 'Elevated Distress-Propensity Tier'
                       ? 'bg-amber-950 text-amber-300 border border-amber-800'
                       : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                   }`}>
@@ -124,12 +124,13 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-xs text-slate-400 leading-relaxed border-t border-slate-800/80 pt-3">
-                  <p><strong className="text-slate-300">Baseline Cutoff:</strong> P75 ({risk.p75_baseline_threshold_pct}%)</p>
-                  <p className="mt-1 text-[11px] text-slate-400">{risk.calibration_note}</p>
+                  <p><strong className="text-slate-300">Calibrated Threshold:</strong> {risk.operating_threshold_score}</p>
+                  <p className="mt-0.5"><strong className="text-slate-300">Val Precision / Recall:</strong> {risk.validation_precision} / {risk.validation_recall}</p>
+                  <p className="mt-1.5 text-[11px] text-slate-400">{risk.calibration_note}</p>
                 </div>
               </div>
             ) : (
-              <div className="text-sm text-slate-500 mt-4">Loading risk metrics...</div>
+              <div className="text-sm text-slate-500 mt-4">Loading metrics...</div>
             )}
           </div>
 
