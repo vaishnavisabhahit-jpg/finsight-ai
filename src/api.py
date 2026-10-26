@@ -1,274 +1,89 @@
-import logging
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Dict, Any, List
-
+import os
+import joblib
 import numpy as np
 import pandas as pd
-import shap
-import xgboost as xgb
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sklearn.ensemble import IsolationForest
-from sklearn.metrics import precision_recall_curve
+from pydantic import BaseModel
 
-from src.config import settings
-from src.schemas import (
-    HealthResponse, CompanySummary, ForecastResponse,
-    RiskResponse, ExplainResponse, ShapFeatureAttribution,
-    AnomaliesResponse, AnomalyRecord
-)
+# Ensure models are loaded
+MODELS_DIR = "models"
+DATA_PATH = os.path.join("data", "featured_financials.csv")
 
-logging.basicConfig(level=settings.LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("finsight-backend")
+try:
+  forecast_model = joblib.load(
+      os.path.join(MODELS_DIR, "xgb_forecast_model.joblib")
+  )
+  forecast_features = joblib.load(
+      os.path.join(MODELS_DIR, "forecast_features.joblib")
+  )
+except Exception as e:
+  forecast_model = None
+  forecast_features = None
 
-ml_engine: Dict[str, Any] = {}
 
-FEATURE_COLS = [
-    'Lag_Revenue_1', 'Lag_OperatingProfit_1', 'Lag_OperatingMargin_1',
-    'Lag_DebtToCash_1', 'Revenue_QoQ_Growth'
-]
+@app.get("/surface/{company}")
+def get_model_driven_surface(company: str):
+  """Generates a dynamic 3D sensitivity surface driven by the trained XGBoost model.
 
-def resolve_data_path() -> Path:
-    target = Path(settings.DATA_PATH)
-    if target.exists():
-        return target
-    
-    fallbacks = [
-        Path("data/synthetic_fpa_features.csv"),
-        Path("data/sec_features.csv"),
-        Path(__file__).resolve().parent.parent / "data" / "synthetic_fpa_features.csv",
-        Path(__file__).resolve().parent.parent / "data" / "sec_features.csv"
-    ]
-    for p in fallbacks:
-        if p.exists():
-            return p
-
-    raise RuntimeError(f"Missing data source. Tried {settings.DATA_PATH} and fallback paths.")
-
-def initialize_models():
-    data_path = resolve_data_path()
-    logger.info("Initializing ML models from %s...", data_path)
-
-    df = pd.read_csv(data_path)
-    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-    ml_engine['data'] = df
-
-    # 1. XGBoost Forecasting Regressor
-    reg = xgb.XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42)
-    reg.fit(df[FEATURE_COLS], df['OperatingProfit'])
-    ml_engine['regressor'] = reg
-
-    # 2. Strict Out-of-Time Temporal Split for Distress Model & Calibration
-    sorted_dates = sorted(df['Date'].unique())
-    split_idx = int(len(sorted_dates) * 0.75)
-    split_date = sorted_dates[split_idx]
-    
-    train_df = df[df['Date'] < split_date].copy()
-    val_df = df[df['Date'] >= split_date].copy()
-    ml_engine['split_date'] = split_date
-
-    pos_weight = (len(train_df) - train_df['IsDistressed'].sum()) / max(1, train_df['IsDistressed'].sum())
-    clf = xgb.XGBClassifier(
-        n_estimators=60,
-        max_depth=3,
-        scale_pos_weight=pos_weight,
-        random_state=42,
-        eval_metric='logloss'
+  Axes: Timeline Horizons (Q+1 to Q+5) x Macro Revenue/Margin Shocks (-30% to
+  +30%)
+  """
+  if forecast_model is None or not os.path.exists(DATA_PATH):
+    raise HTTPException(
+        status_code=500, detail="Forecasting model or dataset not loaded."
     )
-    clf.fit(train_df[FEATURE_COLS], train_df['IsDistressed'])
-    ml_engine['classifier'] = clf
 
-    # Precision-Recall Optimization on Validation Fold
-    val_scores = clf.predict_proba(val_df[FEATURE_COLS])[:, 1]
-    y_val = val_df['IsDistressed'].values
-    
-    precisions, recalls, thresholds = precision_recall_curve(y_val, val_scores)
-    f1_scores = np.divide(
-        2 * (precisions[:-1] * recalls[:-1]),
-        (precisions[:-1] + recalls[:-1]),
-        out=np.zeros_like(thresholds),
-        where=(precisions[:-1] + recalls[:-1]) > 0
-    )
-    best_idx = int(np.argmax(f1_scores)) if len(f1_scores) > 0 else 0
-    best_threshold = float(thresholds[best_idx]) if len(thresholds) > 0 else 0.5
-    val_prec = float(precisions[best_idx]) if len(precisions) > 0 else 0.0
-    val_rec = float(recalls[best_idx]) if len(recalls) > 0 else 0.0
+  df = pd.read_csv(DATA_PATH)
+  company_records = df[df["BusinessUnit"] == company].sort_values("Date")
 
-    ml_engine['threshold'] = best_threshold
-    ml_engine['val_precision'] = val_prec
-    ml_engine['val_recall'] = val_rec
+  if company_records.empty:
+    # Fallback to NovaTech Retail or first entity if synthetic matching
+    company_records = df[
+        df["BusinessUnit"] == "NovaTech Retail (Synthetic)"
+    ].sort_values("Date")
+    if company_records.empty:
+      company_records = df.sort_values("Date")
 
-    # 3. TreeSHAP Attribution Engine
-    ml_engine['explainer'] = shap.TreeExplainer(clf)
+  latest_vector = company_records.iloc[-1][forecast_features].copy()
 
-    # 4. Outlier Isolation Forest
-    iso = IsolationForest(contamination=0.06, random_state=42)
-    iso.fit(df[FEATURE_COLS])
-    ml_engine['iso_forest'] = iso
-    logger.info("Engine initialized. Threshold: %.4f | Precision: %.2f | Recall: %.2f",
-                best_threshold, val_prec, val_rec)
+  quarters = ["Q+1 Horizon", "Q+2 Horizon", "Q+3 Horizon", "Q+4 Horizon", "Q+5 Horizon"]
+  scenarios = [
+      "Severe Stress (-30%)",
+      "Moderate Downside (-15%)",
+      "Baseline Trajectory (0%)",
+      "Moderate Upside (+15%)",
+      "Strong Expansion (+30%)",
+  ]
+  shock_multipliers = [-0.30, -0.15, 0.0, 0.15, 0.30]
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    initialize_models()
-    yield
-    ml_engine.clear()
-    logger.info("ML Engine shut down.")
+  z_matrix = []
 
-app = FastAPI(
-    title="FinSight AI Backend",
-    description="FP&A Decision Support Engine with out-of-time XGBoost forecasts, TreeSHAP attributions, and PR-calibrated triage.",
-    version="2.2.0",
-    lifespan=lifespan
-)
+  for shock in shock_multipliers:
+    row_predictions = []
+    shocked_vector = latest_vector.copy()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    # Apply macro stress shock to revenue, margins, and momentum
+    if "GrossMarginPct" in shocked_vector:
+      shocked_vector["GrossMarginPct"] += shock * 15.0
+    if "OperatingMarginPct" in shocked_vector:
+      shocked_vector["OperatingMarginPct"] += shock * 12.0
+    if "Revenue_Lag1" in shocked_vector:
+      shocked_vector["Revenue_Lag1"] *= 1.0 + shock
+    if "Rolling3M_AvgRev" in shocked_vector:
+      shocked_vector["Rolling3M_AvgRev"] *= 1.0 + shock
 
-def get_company_df(company: str) -> pd.DataFrame:
-    df: pd.DataFrame = ml_engine['data']
-    comp_df = df[df['Company'].str.lower() == company.lower()].sort_values('Date').reset_index(drop=True)
-    if comp_df.empty:
-        raise HTTPException(status_code=404, detail=f"Company '{company}' not found.")
-    return comp_df
+    for step in range(len(quarters)):
+      # Compound time-decay or horizon drift
+      step_vector = shocked_vector.copy()
+      if "OperatingMargin_Lag1" in step_vector:
+        step_vector["OperatingMargin_Lag1"] += (shock * 2.0) * (step + 1)
 
-@app.get("/health", response_model=HealthResponse)
-def health():
-    return {
-        "status": "healthy",
-        "service": "FinSight AI Inference Engine",
-        "companies_loaded": int(ml_engine['data']['Company'].nunique())
-    }
+      input_array = pd.DataFrame([step_vector])[forecast_features]
+      pred_val = float(forecast_model.predict(input_array)[0])
 
-@app.get("/companies", response_model=List[CompanySummary])
-def get_companies():
-    df: pd.DataFrame = ml_engine['data']
-    summaries = []
-    for company, group in df.groupby('Company'):
-        latest = group.sort_values('Date').iloc[-1]
-        summaries.append({
-            "company": str(company),
-            "latest_quarter": str(latest['Date']),
-            "latest_revenue_usd": float(latest['Revenue']),
-            "latest_operating_profit_usd": float(latest['OperatingProfit']),
-            "latest_operating_margin_pct": round(float(latest['OperatingMarginPct']), 2),
-            "debt_to_cash_ratio": round(float(latest['DebtToCashRatio']), 2)
-        })
-    return summaries
+      # Scale to thousands ($k) for UI presentation
+      row_predictions.append(round(pred_val / 1000.0, 2))
 
-@app.get("/forecast/{company}", response_model=ForecastResponse)
-def get_forecast(company: str):
-    comp_df = get_company_df(company)
-    preds = ml_engine['regressor'].predict(comp_df[FEATURE_COLS])
-    
-    latest = comp_df.iloc[-1]
-    next_input_df = pd.DataFrame([{
-        'Lag_Revenue_1': latest['Revenue'],
-        'Lag_OperatingProfit_1': latest['OperatingProfit'],
-        'Lag_OperatingMargin_1': latest['OperatingMarginPct'],
-        'Lag_DebtToCash_1': latest['DebtToCashRatio'],
-        'Revenue_QoQ_Growth': latest['Revenue_QoQ_Growth']
-    }])[FEATURE_COLS]
-    next_quarter_pred = float(ml_engine['regressor'].predict(next_input_df)[0])
+    z_matrix.append(row_predictions)
 
-    return {
-        "company": str(comp_df.iloc[0]['Company']),
-        "historical_dates": comp_df['Date'].tolist(),
-        "actual_operating_profit": [float(x) for x in comp_df['OperatingProfit'].tolist()],
-        "predicted_operating_profit": [round(float(x), 2) for x in preds],
-        "next_quarter_forecast_usd": round(float(next_quarter_pred), 2)
-    }
-
-@app.get("/risk/{company}", response_model=RiskResponse)
-def get_risk(company: str):
-    comp_df = get_company_df(company)
-    latest = comp_df.iloc[-1]
-    
-    input_df = pd.DataFrame([latest[FEATURE_COLS]])
-    raw_score = float(ml_engine['classifier'].predict_proba(input_df)[0][1])
-    threshold = float(ml_engine['threshold'])
-    
-    tier = "Elevated Distress-Propensity Tier" if raw_score >= threshold else "Baseline Propensity Tier"
-
-    return {
-        "company": str(comp_df.iloc[0]['Company']),
-        "distress_propensity_score": round(float(raw_score), 4),
-        "audit_triage_tier": str(tier),
-        "historical_distress_count": int(comp_df['IsDistressed'].sum()),
-        "operating_threshold_score": round(float(threshold), 4),
-        "validation_precision": round(float(ml_engine['val_precision']), 2),
-        "validation_recall": round(float(ml_engine['val_recall']), 2),
-        "calibration_note": (
-            f"Threshold ({round(float(threshold), 4)}) calibrated on out-of-time validation fold to optimize F1 score. "
-            f"Validation performance: Precision={round(float(ml_engine['val_precision']), 2)}, Recall={round(float(ml_engine['val_recall']), 2)}."
-        ),
-        "score_interpretation": "Class-weighted propensity score from cost-sensitive XGBoost, not an absolute default probability."
-    }
-
-@app.get("/explain/{company}", response_model=ExplainResponse)
-def explain_risk(company: str):
-    comp_df = get_company_df(company)
-    latest = comp_df.iloc[-1]
-    
-    input_df = pd.DataFrame([latest[FEATURE_COLS]])
-    
-    explainer = ml_engine['explainer']
-    raw_shap = explainer.shap_values(input_df)
-    
-    if isinstance(raw_shap, list):
-        shap_vals = raw_shap[1][0]
-    elif len(raw_shap.shape) == 2:
-        shap_vals = raw_shap[0]
-    else:
-        shap_vals = raw_shap[0][0]
-
-    base_val = explainer.expected_value
-    if isinstance(base_val, (list, np.ndarray)):
-        base_val = float(base_val[-1])
-    else:
-        base_val = float(base_val)
-
-    booster = ml_engine['classifier'].get_booster()
-    dmat = xgb.DMatrix(input_df)
-    margin_pred = float(booster.predict(dmat, output_margin=True)[0])
-    
-    attributions = [
-        ShapFeatureAttribution(feature=FEATURE_COLS[i], attribution_weight=round(float(shap_vals[i]), 4))
-        for i in range(len(FEATURE_COLS))
-    ]
-    dominant = FEATURE_COLS[int(np.argmax(np.abs(shap_vals)))]
-
-    return {
-        "company": str(comp_df.iloc[0]['Company']),
-        "dominant_driver": str(dominant),
-        "attributions": attributions,
-        "base_value": round(float(base_val), 4),
-        "model_raw_prediction": round(float(margin_pred), 4)
-    }
-
-@app.get("/anomalies", response_model=AnomaliesResponse)
-def get_anomalies():
-    df: pd.DataFrame = ml_engine['data']
-    preds = ml_engine['iso_forest'].predict(df[FEATURE_COLS])
-    anomaly_rows = df[preds == -1]
-
-    records = []
-    for _, row in anomaly_rows.iterrows():
-        records.append({
-            "company": str(row['Company']),
-            "date": str(row['Date']),
-            "revenue_usd": float(row['Revenue']),
-            "operating_profit_usd": float(row['OperatingProfit']),
-            "reason": "Multivariate Financial Divergence"
-        })
-
-    return {
-        "total_anomalies_flagged": int(len(records)),
-        "anomalies": records
-    }
+  return {"x": quarters, "y": scenarios, "z": z_matrix}

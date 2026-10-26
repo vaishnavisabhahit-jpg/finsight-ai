@@ -1,81 +1,109 @@
 import os
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import average_precision_score, roc_auc_score
 
-def run_anomaly_and_consolidation():
-    data_path = os.path.join("data", "featured_financials.csv")
-    forecast_path = os.path.join("outputs", "forecast_predictions.csv")
-    risk_path = os.path.join("outputs", "risk_predictions.csv")
+DATA_PATH = os.path.join("data", "featured_financials.csv")
+MODELS_DIR = "models"
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+ANOMALY_FEATURE_COLS = [
+    "GrossMarginPct",
+    "OperatingMarginPct",
+    "ReceivablesToRevenueRatio",
+    "CashBufferRatio",
+    "DebtToCashRatio",
+    "RevenueGrowthMoM",
+    "ExpenseGrowthMoM",
+    "OperatingProfitGrowthMoM",
+]
+
+def inject_synthetic_accounting_anomalies(df: pd.DataFrame, injection_rate: float = 0.05, seed: int = 42):
+    """
+    Creates an evaluation dataset with known, injected financial statement distortions:
+    1. Receivables Inflation (Revenue-Receivables Decoupling)
+    2. Severe Margin Collapse with Expense Inflation
+    3. Extreme Debt-to-Cash Divergence
+    """
+    np.random.seed(seed)
+    eval_df = df.copy()
+    n_injections = int(len(eval_df) * injection_rate)
+    injection_indices = np.random.choice(eval_df.index, size=n_injections, replace=False)
     
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Missing {data_path}. Run previous steps first.")
-        
-    df = pd.read_csv(data_path)
-    df["Date"] = pd.to_datetime(df["Date"])
-    df = df.sort_values(["Date", "BusinessUnit"]).reset_index(drop=True)
+    eval_df["is_injected_anomaly"] = 0
     
-    # --- 1. Module C: Financial Anomaly Detection (Isolation Forest) ---
-    anomaly_features = [
-        "RevenueGrowthMoM", "ExpenseGrowthMoM", "OperatingMarginPct",
-        "ReceivablesToRevenueRatio", "CashBufferRatio"
-    ]
-    
-    # Set expected contamination to 5% of monthly observations
-    iso_forest = IsolationForest(contamination=0.05, random_state=42)
-    df["AnomalyRaw"] = iso_forest.fit_predict(df[anomaly_features])
-    
-    # -1 indicates anomaly in scikit-learn, 1 is normal
-    df["IsAnomaly"] = np.where(df["AnomalyRaw"] == -1, 1, 0)
-    # Decision function: lower values mean more anomalous
-    df["AnomalyScore"] = np.round(-iso_forest.decision_function(df[anomaly_features]), 4)
-    
-    # Determine the primary metric driver for each anomaly
-    anomaly_reasons = []
-    for _, row in df.iterrows():
-        if row["IsAnomaly"] == 1:
-            if row["ExpenseGrowthMoM"] > 25:
-                anomaly_reasons.append("Unusual Expense Spike")
-            elif row["ReceivablesToRevenueRatio"] > 1.1:
-                anomaly_reasons.append("Abnormal Receivables Surge")
-            elif row["RevenueGrowthMoM"] < -15:
-                anomaly_reasons.append("Severe Revenue Drop")
-            elif row["CashBufferRatio"] < 1.0:
-                anomaly_reasons.append("Critically Low Cash Buffer")
-            else:
-                anomaly_reasons.append("Multivariate Outlier")
-        else:
-            anomaly_reasons.append("Normal")
+    for idx in injection_indices:
+        anomaly_type = np.random.choice(["channel_stuffing", "margin_collapse", "liquidity_drain"])
+        if anomaly_type == "channel_stuffing":
+            eval_df.loc[idx, "ReceivablesToRevenueRatio"] *= np.random.uniform(3.5, 6.0)
+            eval_df.loc[idx, "RevenueGrowthMoM"] -= np.random.uniform(25.0, 50.0)
+        elif anomaly_type == "margin_collapse":
+            eval_df.loc[idx, "GrossMarginPct"] -= np.random.uniform(30.0, 60.0)
+            eval_df.loc[idx, "ExpenseGrowthMoM"] += np.random.uniform(40.0, 80.0)
+        elif anomaly_type == "liquidity_drain":
+            eval_df.loc[idx, "CashBufferRatio"] *= np.random.uniform(0.05, 0.20)
+            eval_df.loc[idx, "DebtToCashRatio"] *= np.random.uniform(4.0, 8.0)
             
-    df["AnomalyReason"] = anomaly_reasons
+        eval_df.loc[idx, "is_injected_anomaly"] = 1
+        
+    return eval_df
+
+def train_and_validate_anomaly_detector():
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"Missing {DATA_PATH}. Run src/feature_engineering.py first.")
+        
+    df = pd.read_csv(DATA_PATH)
     
-    print("=== Financial Anomaly Detection Summary ===")
-    print(f"Total Anomalies Flagged: {df['IsAnomaly'].sum()} out of {len(df)} records")
-    print(df[df["IsAnomaly"] == 1][["Date", "BusinessUnit", "AnomalyReason", "AnomalyScore"]])
+    # 1. Train Unsupervised Isolation Forest on Clean/Historical Data
+    iso_forest = IsolationForest(
+        n_estimators=150,
+        contamination=0.06,
+        random_state=42,
+        n_jobs=-1
+    )
+    iso_forest.fit(df[ANOMALY_FEATURE_COLS])
     
-    # --- 2. Master Consolidation for Power BI Decision Layer ---
-    # Merge actuals, forecast predictions, risk metrics, and anomaly flags
-    forecast_df = pd.read_csv(forecast_path)
-    forecast_df["Date"] = pd.to_datetime(forecast_df["Date"])
+    # 2. Validation via Injection Test
+    eval_df = inject_synthetic_accounting_anomalies(df, injection_rate=0.06, seed=42)
     
-    risk_df = pd.read_csv(risk_path)
-    risk_df["Date"] = pd.to_datetime(risk_df["Date"])
+    # Isolation Forest scores: lower/negative = more anomalous. We invert so higher = more anomalous.
+    raw_scores = iso_forest.score_samples(eval_df[ANOMALY_FEATURE_COLS])
+    anomaly_scores = -raw_scores
     
-    # Left join forecast and risk onto the master featured dataset
-    master = pd.merge(df, forecast_df, on=["Date", "BusinessUnit"], how="left")
-    master = pd.merge(master, risk_df[["Date", "BusinessUnit", "Predicted_RiskProbPct", "Predicted_RiskCategory", "TopRiskDriver"]], on=["Date", "BusinessUnit"], how="left")
+    y_true = eval_df["is_injected_anomaly"].values
     
-    # Fill non-test historical rows for Power BI visual continuity
-    master["Predicted_RiskCategory"] = master["Predicted_RiskCategory"].fillna("Historical Record")
-    master["TopRiskDriver"] = master["TopRiskDriver"].fillna("N/A")
+    # 3. Compute Recall@K (e.g. Top 6%, 10%, 15% scored records)
+    def compute_recall_at_k(scores, ground_truth, k_pct):
+        top_k_threshold = np.percentile(scores, 100 - (k_pct * 100))
+        predicted_anomalies = (scores >= top_k_threshold).astype(int)
+        tp = np.sum((predicted_anomalies == 1) & (ground_truth == 1))
+        total_anomalies = np.sum(ground_truth == 1)
+        return (tp / total_anomalies) if total_anomalies > 0 else 0.0
+
+    recall_at_6 = compute_recall_at_k(anomaly_scores, y_true, 0.06)
+    recall_at_10 = compute_recall_at_k(anomaly_scores, y_true, 0.10)
+    recall_at_15 = compute_recall_at_k(anomaly_scores, y_true, 0.15)
     
-    # Format Date cleanly for BI ingestion
-    master["Date"] = master["Date"].dt.strftime("%Y-%m-%d")
+    roc_auc = roc_auc_score(y_true, anomaly_scores)
+    pr_auc = average_precision_score(y_true, anomaly_scores)
     
-    output_master = os.path.join("outputs", "finsight_master_analytics.csv")
-    master.to_csv(output_master, index=False)
-    print(f"\nConsolidated master analytics dataset created at: {output_master}")
-    print(f"Total columns ready for Power BI: {len(master.columns)}")
+    # 4. Save Model Artifacts
+    joblib.dump(iso_forest, os.path.join(MODELS_DIR, "isolation_forest.joblib"))
+    joblib.dump(ANOMALY_FEATURE_COLS, os.path.join(MODELS_DIR, "anomaly_features.joblib"))
+    
+    print("=" * 65)
+    print("ISOLATION FOREST ANOMALY VALIDATION REPORT (FALSIFIABILITY TEST):")
+    print(f"Total Evaluated Records: {len(eval_df)} | Injected Red Flags: {np.sum(y_true)}")
+    print("-" * 65)
+    print(f"Recall@6% Budget  : {recall_at_6:.2%}")
+    print(f"Recall@10% Budget : {recall_at_10:.2%}")
+    print(f"Recall@15% Budget : {recall_at_15:.2%}")
+    print(f"Anomaly ROC-AUC   : {roc_auc:.4f}")
+    print(f"Anomaly PR-AUC    : {pr_auc:.4f}")
+    print("=" * 65)
+    print(f"Saved calibrated anomaly model to {MODELS_DIR}/isolation_forest.joblib")
 
 if __name__ == "__main__":
-    run_anomaly_and_consolidation()
+    train_and_validate_anomaly_detector()

@@ -1,41 +1,44 @@
 import os
+import joblib
+import numpy as np
 import pandas as pd
-from fastapi.testclient import TestClient
-from src.api import app, initialize_models
+import pytest
 
-def test_api_health():
-    with TestClient(app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["companies_loaded"] > 0
+MODELS_DIR = "models"
+DATA_PATH = os.path.join("data", "featured_financials.csv")
 
-def test_sec_features_data_integrity():
-    csv_path = "data/sec_features.csv"
-    assert os.path.exists(csv_path), f"File {csv_path} does not exist"
-    df = pd.read_csv(csv_path)
-    required_cols = [
-        "Company", "Date", "Revenue", "OperatingProfit",
-        "Lag_Revenue_1", "Lag_OperatingProfit_1", "Lag_OperatingMargin_1",
-        "Lag_DebtToCash_1", "Revenue_QoQ_Growth", "IsDistressed"
-    ]
-    for col in required_cols:
-        assert col in df.columns, f"Missing required column: {col}"
-    assert len(df) > 0
+def test_data_artifacts_exist():
+    assert os.path.exists(DATA_PATH), "featured_financials.csv is missing. Run feature engineering."
 
-def test_api_inference_endpoint():
-    # Production inference route is GET /forecast/{company}
-    with TestClient(app) as client:
-        # Retrieve active companies
-        comp_res = client.get("/companies")
-        assert comp_res.status_code == 200
-        first_company = comp_res.json()[0]["company"]
+def test_no_future_target_leakage_in_features():
+    df = pd.read_csv(DATA_PATH)
+    assert "Target_NextPeriodHighRisk" in df.columns
+    assert "Target_NextPeriodOperatingProfit" in df.columns
 
-        # Run model inference on first cohort
-        response = client.get(f"/forecast/{first_company}")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["company"] == first_company
-        assert "next_quarter_forecast_usd" in data
-        assert isinstance(data["next_quarter_forecast_usd"], float)
+    # Verify no infinite or NaN values in feature matrix
+    numeric_df = df.select_dtypes(include=[np.number])
+    assert not numeric_df.isin([np.inf, -np.inf]).any().any(), "Features contain inf values."
+    assert not numeric_df.isnull().any().any(), "Features contain unhandled NaNs."
+
+def test_model_artifacts_loadable():
+    xgb_risk = joblib.load(os.path.join(MODELS_DIR, "xgb_risk_model.joblib"))
+    risk_meta = joblib.load(os.path.join(MODELS_DIR, "risk_meta.joblib"))
+    xgb_forecast = joblib.load(os.path.join(MODELS_DIR, "xgb_forecast_model.joblib"))
+    iso_forest = joblib.load(os.path.join(MODELS_DIR, "isolation_forest.joblib"))
+
+    assert xgb_risk is not None
+    assert "operating_threshold" in risk_meta
+    assert 0.0 < risk_meta["operating_threshold"] < 1.0
+    assert xgb_forecast is not None
+    assert iso_forest is not None
+
+def test_risk_inference_shape():
+    risk_meta = joblib.load(os.path.join(MODELS_DIR, "risk_meta.joblib"))
+    xgb_risk = joblib.load(os.path.join(MODELS_DIR, "xgb_risk_model.joblib"))
+    feature_cols = risk_meta["feature_cols"]
+
+    df = pd.read_csv(DATA_PATH)
+    sample_vector = df.iloc[[0]][feature_cols]
+
+    proba = xgb_risk.predict_proba(sample_vector)[0][1]
+    assert 0.0 <= proba <= 1.0

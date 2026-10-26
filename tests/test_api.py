@@ -1,16 +1,15 @@
 import pytest
+import numpy as np
 from fastapi.testclient import TestClient
-from src.api import app, ml_engine, initialize_models
+from src.api import app, initialize_models
 
-# Initialize TestClient
 client = TestClient(app)
 
 @pytest.fixture(scope="session", autouse=True)
 def run_startup():
-    # Explicitly ensure in-memory models and thresholds initialize for testing
     initialize_models()
 
-def test_health_check():
+def test_health_check_returns_loaded_state():
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
@@ -23,56 +22,39 @@ def test_companies_returns_synthetic_cohorts():
     companies = response.json()
     assert isinstance(companies, list)
     assert len(companies) > 0
-    # Verify synthetic naming convention exists
-    first_name = companies[0]["company"]
-    assert "(Synthetic)" in first_name
+    assert "(Synthetic)" in companies[0]["company"]
 
-def test_fundamentals_retrieval():
-    response = client.get("/companies")
-    assert response.status_code == 200
-    target_company = response.json()[0]["company"]
-
-    forecast_res = client.get(f"/forecast/{target_company}")
-    assert forecast_res.status_code == 200
-    body = forecast_res.json()
-    assert body["company"] == target_company
-    assert len(body["historical_dates"]) > 0
-
-def test_forecast_returns_expected_series_shape():
-    response = client.get("/companies")
-    target_company = response.json()[0]["company"]
-
-    response = client.get(f"/forecast/{target_company}")
-    assert response.status_code == 200
-    body = response.json()
-    assert "actual_operating_profit" in body
-    assert "predicted_operating_profit" in body
-    assert "next_quarter_forecast_usd" in body
-    assert len(body["actual_operating_profit"]) == len(body["predicted_operating_profit"])
-
-def test_shap_attribution_schema():
-    response = client.get("/companies")
-    target_company = response.json()[0]["company"]
-
-    response = client.get(f"/explain/{target_company}")
-    assert response.status_code == 200
-    body = response.json()
-    assert "dominant_driver" in body
-    assert "attributions" in body
-    assert len(body["attributions"]) == 5
-
-def test_risk_triage_returns_calibrated_percentile_fields():
-    response = client.get("/companies")
-    target_company = response.json()[0]["company"]
-
-    response = client.get(f"/risk/{target_company}")
+def test_forecast_horizon_and_shape_match():
+    target = client.get("/companies").json()[0]["company"]
+    response = client.get(f"/forecast/{target}")
     assert response.status_code == 200
     body = response.json()
     
-    # Assert calibration honesty fields
-    assert "distress_risk_probability_pct" in body
-    assert "p75_baseline_threshold_pct" in body
-    assert "audit_triage_tier" in body
-    assert body["audit_triage_tier"] in ["Elevated Anomaly Tier", "Baseline Distribution Tier"]
+    assert len(body["historical_dates"]) == len(body["actual_operating_profit"])
+    assert len(body["actual_operating_profit"]) == len(body["predicted_operating_profit"])
+    assert isinstance(body["next_quarter_forecast_usd"], float)
+
+def test_risk_triage_returns_pr_calibrated_fields():
+    target = client.get("/companies").json()[0]["company"]
+    response = client.get(f"/risk/{target}")
+    assert response.status_code == 200
+    body = response.json()
+    
+    assert "distress_propensity_score" in body
+    assert "operating_threshold_score" in body
+    assert "validation_precision" in body
+    assert "validation_recall" in body
+    assert body["audit_triage_tier"] in ["Elevated Distress-Propensity Tier", "Baseline Propensity Tier"]
     assert "calibration_note" in body
     assert "score_interpretation" in body
+
+def test_shap_additivity_identity():
+    target = client.get("/companies").json()[0]["company"]
+    response = client.get(f"/explain/{target}")
+    assert response.status_code == 200
+    body = response.json()
+    
+    attribution_sum = sum(item["attribution_weight"] for item in body["attributions"])
+    reconstructed = attribution_sum + body["base_value"]
+    
+    assert np.isclose(reconstructed, body["model_raw_prediction"], atol=1e-2)
